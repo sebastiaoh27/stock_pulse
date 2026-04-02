@@ -1,0 +1,8 @@
+.env
+backend/venv/
+backend/stockpulse.db
+frontend/node_modules/
+frontend/build/
+__pycache__/
+*.pyc
+.DS_Store

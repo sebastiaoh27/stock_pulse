@@ -1,0 +1,13 @@
+{
+  "name": "stockpulse",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "cd frontend && npm install && npm run build"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@netlify/blobs": "^8.0.0",
+    "@netlify/functions": "^2.0.0"
+  }
+}

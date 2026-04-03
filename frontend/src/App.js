@@ -41,6 +41,15 @@ const MODELS = [
 ];
 
 export default function App() {
+
+  const getEta = (run) => {
+    if (!run || !run.progress_percent || !run.stocks_processed) return 'Calculating ETA...';
+    const totalStocks = Math.round((run.stocks_processed / run.progress_percent) * 100);
+    const remaining = totalStocks - run.stocks_processed;
+    const etaMins = Math.ceil((remaining * 12) / 60); // Assumes ~12s per stock
+    return `~ ${etaMins} min left`;
+  };
+
   const [page, setPage] = useState('dashboard');
   const [stocks, setStocks] = useState([]);
   const [prompts, setPrompts] = useState([]);
@@ -206,7 +215,7 @@ export default function App() {
           {runStatus === 'running' && latestRun && (
             <div className="card" style={{ margin: '0 20px 20px', borderLeft: '4px solid var(--blue)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 14, fontWeight: 500 }}>Analysis Progress: {latestRun.progress_percent || 0}%</span>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>Analysis Progress: {latestRun.progress_percent || 0}% <span style={{color:"var(--text3)", marginLeft:"10px", fontWeight:"normal"}}>{getEta(latestRun)}</span></span>
                 <button className="badge-red" style={{ cursor: 'pointer', border: 'none', padding: '6px 12px', borderRadius: '4px' }} 
                   onClick={() => fetch(`/api/runs/${latestRun.id}/cancel`, { method: 'POST' }).then(() => window.location.reload())}>
                   Cancel Run

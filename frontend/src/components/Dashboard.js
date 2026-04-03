@@ -19,6 +19,8 @@ function Sparkline({ changes }) {
   const max = Math.max(...vals.map(Math.abs), 0.01);
   return (
     <div className="spark">
+      {runs && runs[0]?.status === 'running' && (<div className="card" style={{ marginBottom: 20 }}><div style={{display:'flex',justifyContent:'space-between'}}><span>Analysis Progress: {runs[0].progress_percent||0}%</span><button className="badge-red" style={{border:'none', cursor:'pointer'}} onClick={()=>fetch(`/api/runs/${runs[0].id}/cancel`,{method:'POST'}).then(()=>window.location.reload())}>Cancel</button></div></div>)}
+
       {vals.map((c, i) => (
         <div key={i} className="spark-bar" style={{ height: `${Math.max(12, (Math.abs(c)/max)*100)}%`, background: c >= 0 ? 'var(--green)' : 'var(--red)', opacity: 0.5 + (i/vals.length)*0.5 }} />
       ))}

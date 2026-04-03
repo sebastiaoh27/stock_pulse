@@ -157,7 +157,9 @@ async function executeRun(runType = "manual", opts = {}) {
           } catch (e) { console.error(`✗ ${stock.symbol}/${prompt.name}:`, e.message); }
         }
         processed++;
-      } catch (e) { console.error(`✗ ${stock.symbol}:`, e.message); }
+      run.progress_percent = Math.round((processed/stocks.length)*100);
+      await runsStore().setJSON(runId, run);
+    } catch (e) { console.error(`✗ ${stock.symbol}:`, e.message); }
     }
     run.status = "completed"; run.completed_at = new Date().toISOString(); run.stocks_processed = processed;
     run.total_input_tokens = totalIn; run.total_output_tokens = totalOut; run.total_cost = parseFloat(totalCost.toFixed(6));
@@ -286,6 +288,11 @@ async function handleRequest(req, path, method, body) {
     const estimate = await estimateRunCost(allStocks.length, allPrompts.length, activeModel);
     (async () => { for (const date of dates) { await executeRun("retroactive", { targetDate: date, model: activeModel }); await new Promise(r => setTimeout(r, 500)); } })().catch(console.error);
     return json({ status: "started", days: dates.length, total_estimated_cost: parseFloat((estimate.estimated_cost * dates.length).toFixed(4)), total_estimated_seconds: estimate.estimated_seconds * dates.length });
+  }
+  const cancelM = path.match(/^\/api\/runs\/([^/]+)\/cancel$/);
+  if (cancelM && method === "POST") {
+    let r = await runsStore().get(cancelM[1], { type: "json" });
+    if (r) { r.status = "cancelled"; await runsStore().setJSON(cancelM[1], r); return Response.json({ success: true }); }
   }
   const runM = path.match(/^\/api\/runs\/([^/]+)$/);
   if (runM && method === "GET") {

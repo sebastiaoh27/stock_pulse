@@ -135,6 +135,8 @@ export default function Statistics() {
         <div style={{display:'flex',justifyContent:'flex-end'}}><button className="btn" onClick={load}>↻ Refresh</button></div>
 
         <div className="stat-grid">
+      <div className="stat-card" style={{ gridColumn: '1 / -1' }}><div className="stat-lbl">Token Budget</div><div className="stat-val">{((stats?.total_input_tokens || 0) + (stats?.total_output_tokens || 0)).toLocaleString()} / 5,000,000</div></div>
+
           {[
             { label: 'Total Analyses', val: stats?.total_analyses ?? 0 },
             { label: 'Total Cost', val: stats?.total_cost > 0 ? `$${stats.total_cost.toFixed(4)}` : '$0' },

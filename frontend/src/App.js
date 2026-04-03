@@ -45,7 +45,8 @@ export default function App() {
   const [stocks, setStocks] = useState([]);
   const [prompts, setPrompts] = useState([]);
   const [model, setModel] = useState('claude-sonnet-4-20250514');
-  const [runStatus, setRunStatus] = useState(null); // null | 'running' | 'completed' | 'failed'
+  const [runStatus, setRunStatus] = useState(null);
+  const [latestRun, setLatestRun] = useState(null); // null | 'running' | 'completed' | 'failed'
   const [notification, setNotification] = useState(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -89,6 +90,7 @@ export default function App() {
         try {
           const runs = await api('/runs');
           const latest = runs[0];
+          setLatestRun(latest);
           if (latest && latest.status !== 'running') {
             setRunStatus(latest.status);
             clearInterval(poll);
@@ -195,6 +197,22 @@ export default function App() {
               {notification.msg}
             </div>
           )}
+          
+          {runStatus === 'running' && latestRun && (
+            <div className="card" style={{ margin: '0 20px 20px', borderLeft: '4px solid var(--blue)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>Analysis Progress: {latestRun.progress_percent || 0}%</span>
+                <button className="badge-red" style={{ cursor: 'pointer', border: 'none', padding: '6px 12px', borderRadius: '4px' }} 
+                  onClick={() => fetch(`/api/runs/${latestRun.id}/cancel`, { method: 'POST' }).then(() => window.location.reload())}>
+                  Cancel Run
+                </button>
+              </div>
+              <div className="prog" style={{ width: '100%', height: '8px', background: 'var(--bg3)', borderRadius: '4px', marginTop: '10px' }}>
+                <div className="prog-fill" style={{ width: `${latestRun.progress_percent || 0}%`, background: 'var(--green)', height: '100%', transition: 'width 0.3s ease' }} />
+              </div>
+            </div>
+          )}
+
           <PageComponent
             stocks={stocks}
             prompts={prompts}

@@ -6,3 +6,4 @@ httpx
 apscheduler
 pandas
 numpy
+pydantic>=2.0

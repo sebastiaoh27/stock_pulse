@@ -74,7 +74,28 @@ export default function App() {
     loadStocks();
     loadPrompts();
     loadSettings();
+    api('/runs').then(runs => { if(runs[0]?.status === 'running') { setRunStatus('running'); setLatestRun(runs[0]); } }).catch(()=>{});
   }, [loadStocks, loadPrompts, loadSettings]);
+
+  
+  useEffect(() => {
+    let poll;
+    if (runStatus === 'running') {
+      poll = setInterval(async () => {
+        try {
+          const runs = await api('/runs');
+          const latest = runs[0];
+          if (latest) setLatestRun(latest);
+          if (latest && latest.status !== 'running') {
+            setRunStatus(latest.status);
+            if (latest.status === 'completed') notify(`Run complete — ${latest.stocks_processed} stocks`);
+          }
+        } catch (_) {}
+      }, 3000);
+    }
+    return () => clearInterval(poll);
+  }, [runStatus, notify]);
+
 
   const changeModel = useCallback(async (m) => {
     setModel(m);
@@ -86,23 +107,7 @@ export default function App() {
     try {
       await api('/runs', { method: 'POST', body: { model, ...opts } });
       notify('Analysis started — results will appear when complete', 'info');
-      const poll = setInterval(async () => {
-        try {
-          const runs = await api('/runs');
-          const latest = runs[0];
-          setLatestRun(latest);
-          if (latest && latest.status !== 'running') {
-            setRunStatus(latest.status);
-            clearInterval(poll);
-            if (latest.status === 'completed') {
-              const cost = latest.total_cost ? ` · $${latest.total_cost.toFixed(4)}` : '';
-              notify(`Run complete — ${latest.stocks_processed} stocks${cost}`);
-            } else {
-              notify('Run failed — check History for details', 'error');
-            }
-          }
-        } catch (_) {}
-      }, 3000);
+      
     } catch (e) {
       setRunStatus('failed');
       notify(e.message, 'error');

@@ -172,6 +172,27 @@ export default function History({ stocks, prompts, showNotification }) {
 
   useEffect(() => { load(); }, []);
 
+  const cancelRun = async (id) => {
+    try {
+      await api(`/runs/${id}/cancel`, { method: 'POST' });
+      load();
+      showNotification('Run cancelled manually', 'info');
+    } catch (e) {
+      showNotification('Failed to cancel', 'error');
+    }
+  };
+
+  useEffect(() => {
+    let poll;
+    if (runs.some(r => r.status === 'running')) {
+      poll = setInterval(() => {
+        api('/runs').then(setRuns).catch(()=>{});
+      }, 3000);
+    }
+    return () => clearInterval(poll);
+  }, [runs]);
+
+
   const dur = r => {
     if (!r.completed_at) return '—';
     const ms = new Date(r.completed_at) - new Date(r.started_at);
@@ -228,11 +249,21 @@ export default function History({ stocks, prompts, showNotification }) {
                       <td style={{fontSize:10,color:'var(--text3)',fontFamily:'var(--mono)'}}>
                         {run.model ? run.model.split('-').slice(1,3).join(' ') : '—'}
                       </td>
+                      
                       <td>
                         {run.status === 'completed' && (
                           <button className="btn btn-xs btn-primary" onClick={() => setSelected(run.id)}>View</button>
                         )}
+                        {run.status === 'running' && (
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <div className="prog" title={`${run.progress_percent || 0}% Complete`} style={{ width: '50px', height: '6px', background: 'var(--bg3)', borderRadius: '3px', overflow: 'hidden' }}>
+                              <div className="prog-fill" style={{ width: `${run.progress_percent || 0}%`, background: 'var(--green)', height: '100%', transition: 'width 0.3s' }} />
+                            </div>
+                            <button className="btn btn-xs badge-red" style={{ padding: '2px 6px' }} onClick={() => cancelRun(run.id)}>Cancel</button>
+                          </div>
+                        )}
                       </td>
+
                     </tr>
                   ))}
                 </tbody>

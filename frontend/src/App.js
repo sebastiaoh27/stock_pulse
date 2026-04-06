@@ -27,35 +27,33 @@ export const useSettings = () => useContext(SettingsContext);
 
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: '⬡' },
-  { id: 'stocks',    label: 'Watchlist',  icon: '◈' },
-  { id: 'prompts',   label: 'Prompts',    icon: '◉' },
-  { id: 'history',   label: 'History',    icon: '◫' },
-  { id: 'statistics',label: 'Analytics',  icon: '◬' },
-  { id: 'suggestions',label:'AI Advisor', icon: '✦' },
+  { id: 'stocks', label: 'Watchlist', icon: '◈' },
+  { id: 'prompts', label: 'Prompts', icon: '◉' },
+  { id: 'history', label: 'History', icon: '◫' },
+  { id: 'statistics', label: 'Analytics', icon: '◬' },
+  { id: 'suggestions', label: 'AI Advisor', icon: '✦' },
 ];
 
 const MODELS = [
   { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', desc: 'Fast · $0.80/M' },
-  { id: 'claude-sonnet-4-20250514',  label: 'Sonnet 4',  desc: 'Balanced · $3/M' },
-  { id: 'claude-opus-4-5',           label: 'Opus 4.5',  desc: 'Best · $15/M' },
+  { id: 'claude-sonnet-4-20250514', label: 'Sonnet 4', desc: 'Balanced · $3/M' },
+  { id: 'claude-opus-4-5', label: 'Opus 4.5', desc: 'Best · $15/M' },
 ];
 
+function fmtEta(secs) {
+  if (secs == null || secs < 0) return '';
+  if (secs === 0) return 'almost done';
+  if (secs < 60) return `~${secs}s left`;
+  return `~${Math.ceil(secs / 60)}m left`;
+}
+
 export default function App() {
-
-  const getEta = (run) => {
-    if (!run || !run.progress_percent || !run.stocks_processed) return 'Calculating ETA...';
-    const totalStocks = Math.round((run.stocks_processed / run.progress_percent) * 100);
-    const remaining = totalStocks - run.stocks_processed;
-    const etaMins = Math.ceil((remaining * 12) / 60); // Assumes ~12s per stock
-    return `~ ${etaMins} min left`;
-  };
-
   const [page, setPage] = useState('dashboard');
   const [stocks, setStocks] = useState([]);
   const [prompts, setPrompts] = useState([]);
   const [model, setModel] = useState('claude-sonnet-4-20250514');
   const [runStatus, setRunStatus] = useState(null);
-  const [latestRun, setLatestRun] = useState(null); // null | 'running' | 'completed' | 'failed'
+  const [latestRun, setLatestRun] = useState(null);
   const [notification, setNotification] = useState(null);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
@@ -83,28 +81,39 @@ export default function App() {
     loadStocks();
     loadPrompts();
     loadSettings();
-    api('/runs').then(runs => { if(runs[0]?.status === 'running') { setRunStatus('running'); setLatestRun(runs[0]); } }).catch(()=>{});
+    // Check if there's an already-running run on page load
+    api('/runs').then(runs => {
+      if (runs[0]?.status === 'running') {
+        setRunStatus('running');
+        setLatestRun(runs[0]);
+      }
+    }).catch(() => {});
   }, [loadStocks, loadPrompts, loadSettings]);
 
-  
+  // Poll for run progress when running
   useEffect(() => {
-    let poll;
-    if (runStatus === 'running') {
-      poll = setInterval(async () => {
-        try {
-          const runs = await api('/runs');
-          const latest = runs[0];
-          if (latest) setLatestRun(latest);
-          if (latest && latest.status !== 'running') {
-            setRunStatus(latest.status);
-            if (latest.status === 'completed') notify(`Run complete — ${latest.stocks_processed} stocks`);
+    if (runStatus !== 'running') return;
+    const poll = setInterval(async () => {
+      try {
+        const runs = await api('/runs');
+        const latest = runs[0];
+        if (latest) setLatestRun(latest);
+        if (latest && latest.status !== 'running') {
+          setRunStatus(latest.status);
+          clearInterval(poll);
+          if (latest.status === 'completed') {
+            const cost = latest.total_cost ? ` · $${latest.total_cost.toFixed(4)}` : '';
+            notify(`Run complete — ${latest.stocks_processed} stocks${cost}`);
+          } else if (latest.status === 'cancelled') {
+            notify('Run was cancelled', 'info');
+          } else {
+            notify('Run failed — check History for details', 'error');
           }
-        } catch (_) {}
-      }, 3000);
-    }
+        }
+      } catch (_) {}
+    }, 2000);
     return () => clearInterval(poll);
   }, [runStatus, notify]);
-
 
   const changeModel = useCallback(async (m) => {
     setModel(m);
@@ -116,16 +125,28 @@ export default function App() {
     try {
       await api('/runs', { method: 'POST', body: { model, ...opts } });
       notify('Analysis started — results will appear when complete', 'info');
-      
     } catch (e) {
       setRunStatus('failed');
       notify(e.message, 'error');
     }
   }, [model, notify]);
 
+  const cancelCurrentRun = useCallback(async () => {
+    if (!latestRun?.id) return;
+    try {
+      await api(`/runs/${latestRun.id}/cancel`, { method: 'POST' });
+      notify('Cancelling run…', 'info');
+    } catch (e) {
+      notify(e.message, 'error');
+    }
+  }, [latestRun, notify]);
+
   const pages = { dashboard: Dashboard, stocks: Stocks, prompts: Prompts, history: History, statistics: Statistics, suggestions: Suggestions };
   const PageComponent = pages[page] || Dashboard;
   const activeNav = NAV.find(n => n.id === page);
+
+  const progress = latestRun?.progress_percent || 0;
+  const eta = latestRun?.eta_seconds;
 
   return (
     <SettingsContext.Provider value={{ model, setModel: changeModel, models: MODELS }}>
@@ -158,7 +179,11 @@ export default function App() {
           </div>
 
           <div className="sidebar-footer">
-            <button className={`run-btn ${runStatus === 'running' ? 'running' : ''}`} onClick={() => triggerRun()} disabled={runStatus === 'running'}>
+            <button
+              className={`run-btn ${runStatus === 'running' ? 'running' : ''}`}
+              onClick={() => triggerRun()}
+              disabled={runStatus === 'running'}
+            >
               {runStatus === 'running' ? <><span className="spinner" />Analyzing…</> : <>↻ Run Analysis</>}
             </button>
             <div className="sidebar-meta">{stocks.length} stocks · {prompts.filter(p => p.active).length} prompts</div>
@@ -174,7 +199,11 @@ export default function App() {
             <span className="logo-mark-sm">SP</span>
             {activeNav?.label}
           </div>
-          <button className={`mobile-run-btn ${runStatus === 'running' ? 'running' : ''}`} onClick={() => triggerRun()} disabled={runStatus === 'running'}>
+          <button
+            className={`mobile-run-btn ${runStatus === 'running' ? 'running' : ''}`}
+            onClick={() => triggerRun()}
+            disabled={runStatus === 'running'}
+          >
             {runStatus === 'running' ? <span className="spinner-sm" /> : '↻'}
           </button>
         </header>
@@ -195,7 +224,7 @@ export default function App() {
               ))}
               <div className="mobile-nav-model">
                 <div className="model-label">Model</div>
-                <select className="model-select" value={model} onChange={e => { changeModel(e.target.value); }}>
+                <select className="model-select" value={model} onChange={e => changeModel(e.target.value)}>
                   {MODELS.map(m => <option key={m.id} value={m.id}>{m.label} — {m.desc}</option>)}
                 </select>
               </div>
@@ -211,19 +240,46 @@ export default function App() {
               {notification.msg}
             </div>
           )}
-          
-          {runStatus === 'running' && latestRun && (
-            <div className="card" style={{ margin: '0 20px 20px', borderLeft: '4px solid var(--blue)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 14, fontWeight: 500 }}>Analysis Progress: {latestRun.progress_percent || 0}% <span style={{color:"var(--text3)", marginLeft:"10px", fontWeight:"normal"}}>{getEta(latestRun)}</span></span>
-                <button className="badge-red" style={{ cursor: 'pointer', border: 'none', padding: '6px 12px', borderRadius: '4px' }} 
-                  onClick={() => fetch(`/api/runs/${latestRun.id}/cancel`, { method: 'POST' }).then(() => window.location.reload())}>
-                  Cancel Run
-                </button>
+
+          {/* Global run progress banner */}
+          {runStatus === 'running' && (
+            <div style={{
+              margin: '0 0 0 0',
+              padding: '10px 20px',
+              background: 'var(--bg2)',
+              borderBottom: '1px solid var(--border)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+            }}>
+              <span className="spinner-sm" />
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: 'var(--text2)' }}>
+                    Analyzing… {progress > 0 ? `${progress}%` : ''}
+                  </span>
+                  <span style={{ fontSize: 11, color: 'var(--text3)', fontFamily: 'var(--mono)' }}>
+                    {fmtEta(eta)}
+                  </span>
+                </div>
+                <div style={{ height: 4, background: 'var(--bg4)', borderRadius: 2, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%',
+                    width: progress > 0 ? `${progress}%` : '30%',
+                    background: 'linear-gradient(90deg, var(--blue), var(--green))',
+                    borderRadius: 2,
+                    transition: 'width 0.5s ease',
+                    animation: progress === 0 ? 'indeterminate 1.5s ease infinite' : 'none',
+                  }} />
+                </div>
               </div>
-              <div className="prog" style={{ width: '100%', height: '8px', background: 'var(--bg3)', borderRadius: '4px', marginTop: '10px' }}>
-                <div className="prog-fill" style={{ width: `${latestRun.progress_percent || 0}%`, background: 'var(--green)', height: '100%', transition: 'width 0.3s ease' }} />
-              </div>
+              <button
+                className="btn btn-xs btn-danger"
+                onClick={cancelCurrentRun}
+                style={{ flexShrink: 0 }}
+              >
+                Cancel
+              </button>
             </div>
           )}
 

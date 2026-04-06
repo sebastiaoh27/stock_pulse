@@ -3,6 +3,7 @@
 import json
 import logging
 import threading
+import time
 from datetime import datetime
 
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
@@ -37,6 +38,38 @@ def cancel_run(run_id: int) -> bool:
     return False
 
 
+def _get_avg_seconds_per_pair() -> float:
+    """Get historical average seconds per stock-prompt pair."""
+    try:
+        with get_db() as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT r.id,
+                       (julianday(r.completed_at) - julianday(r.started_at)) * 86400 as duration_secs,
+                       r.stocks_processed,
+                       COUNT(rr.id) as total_results
+                FROM runs r
+                JOIN run_results rr ON rr.run_id = r.id
+                WHERE r.status = 'completed' AND r.stocks_processed > 0
+                  AND r.run_type = 'manual'
+                GROUP BY r.id
+                ORDER BY r.completed_at DESC
+                LIMIT 5
+            """)
+            rows = c.fetchall()
+            if not rows:
+                return 4.0
+            rates = []
+            for row in rows:
+                dur = row[1] or 0
+                n_results = row[3] or 1
+                if dur > 0 and n_results > 0:
+                    rates.append(dur / n_results)
+            return sum(rates) / len(rates) if rates else 4.0
+    except Exception:
+        return 4.0
+
+
 def execute_run(
     run_type: str = "manual",
     specific_stocks: list | None = None,
@@ -62,7 +95,13 @@ def execute_run(
         run_id = c.lastrowid
         conn.commit()
 
-    _active_runs[run_id] = {"status": "running", "cancelled": False, "progress_percent": 0}
+    _active_runs[run_id] = {
+        "status": "running",
+        "cancelled": False,
+        "progress_percent": 0,
+        "eta_seconds": None,
+        "started_at": time.time(),
+    }
 
     try:
         stocks, prompts = _load_stocks_and_prompts(specific_stocks, specific_prompts)
@@ -112,6 +151,10 @@ def _execute_sync(run_id: int, stocks: list, prompts: list, model: str):
     total_in = 0
     total_out = 0
 
+    # Get historical timing for ETA
+    avg_secs_per_pair = _get_avg_seconds_per_pair()
+    run_start = time.time()
+
     for stock in stocks:
         if _active_runs.get(run_id, {}).get("cancelled"):
             _finish_run(run_id, "completed", processed_stocks, note="Cancelled by user")
@@ -144,8 +187,24 @@ def _execute_sync(run_id: int, stocks: list, prompts: list, model: str):
                     logger.error(f"FAIL {stock['symbol']} / {prompt['name']}: {e}")
 
                 processed_pairs += 1
+
+                # Update progress and ETA
                 if run_id in _active_runs:
-                    _active_runs[run_id]["progress_percent"] = int(processed_pairs / total_pairs * 100)
+                    pct = int(processed_pairs / total_pairs * 100)
+                    elapsed = time.time() - run_start
+                    remaining_pairs = total_pairs - processed_pairs
+
+                    # Use actual elapsed to calibrate ETA
+                    if processed_pairs > 0:
+                        actual_secs_per_pair = elapsed / processed_pairs
+                        # Blend historical and actual
+                        blended = (avg_secs_per_pair * 0.3 + actual_secs_per_pair * 0.7)
+                        eta = int(blended * remaining_pairs)
+                    else:
+                        eta = int(avg_secs_per_pair * remaining_pairs)
+
+                    _active_runs[run_id]["progress_percent"] = pct
+                    _active_runs[run_id]["eta_seconds"] = eta
 
             # Batch insert results per stock
             if results_batch:
@@ -327,6 +386,7 @@ def _finish_run(run_id: int, status: str, stocks_processed: int, error: str | No
     if run_id in _active_runs:
         _active_runs[run_id]["status"] = status
         _active_runs[run_id]["progress_percent"] = 100
+        _active_runs[run_id]["eta_seconds"] = 0
         # Clean up after a delay to let polling catch the final state
         def cleanup():
             import time

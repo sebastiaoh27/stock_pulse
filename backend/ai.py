@@ -197,41 +197,86 @@ class AnthropicService:
         except Exception as e:
             return {"ok": False, "error": str(e), "hint": "Unexpected error"}
 
-    def generate_suggestions(self, prompts: list[dict], recent_results: list[dict], model: str | None = None) -> tuple[list[dict], dict]:
-        """Generate prompt improvement suggestions. Returns (suggestions, usage)."""
+    def generate_suggestions(
+        self,
+        prompts: list[dict],
+        recent_results: list[dict],
+        model: str | None = None,
+    ) -> tuple[list[dict], dict]:
+        """Generate prompt improvement suggestions. Returns (suggestions_list, usage)."""
         model = model or DEFAULT_MODEL
 
-        prompts_str = json.dumps(prompts, indent=2)
-        results_sample = json.dumps(recent_results[:20], indent=2) if recent_results else "No results yet."
+        # Build a concise representation
+        prompts_summary = []
+        for p in prompts:
+            schema = p.get("output_schema", {})
+            fields = list(schema.get("properties", {}).keys()) if isinstance(schema, dict) else []
+            prompts_summary.append({
+                "name": p.get("name", ""),
+                "description": p.get("description", ""),
+                "fields": fields,
+            })
+
+        results_sample = []
+        for r in recent_results[:10]:
+            output = r.get("output", {})
+            results_sample.append({
+                "prompt": r.get("prompt", ""),
+                "symbol": r.get("symbol", ""),
+                "output_keys": list(output.keys()) if isinstance(output, dict) else [],
+            })
 
         system = (
-            "You are an expert prompt engineer for stock analysis. "
-            "Analyze the user's current prompts and recent analysis results, "
-            "then suggest improvements and new prompt ideas. "
-            "Return ONLY a JSON array of suggestion objects."
+            "You are an expert prompt engineer specializing in financial AI systems. "
+            "Generate actionable prompt improvements and new ideas for stock analysis. "
+            "You MUST return a valid JSON object with a 'suggestions' array. "
+            "No markdown, no explanation — ONLY the JSON object."
         )
 
         user_msg = (
-            f"Current prompts:\n{prompts_str}\n\n"
-            f"Recent results sample:\n{results_sample}\n\n"
-            "Return a JSON array where each element has:\n"
-            '- "name": suggestion name\n'
-            '- "type": "improve" or "new"\n'
-            '- "target_prompt": name of prompt to improve (or null for new)\n'
-            '- "description": what it does\n'
-            '- "rationale": why this is better\n'
-            '- "prompt_text": the full prompt text\n'
-            '- "output_schema": JSON Schema object with properties and required\n'
-            '- "pros": array of strengths\n'
-            '- "cons": array of limitations\n'
+            f"Current analysis prompts:\n{json.dumps(prompts_summary, indent=2)}\n\n"
+            f"Recent result samples:\n{json.dumps(results_sample, indent=2)}\n\n"
+            "Generate exactly 4 prompt suggestions (mix of improvements to existing prompts and brand new ideas).\n\n"
+            "Return this exact JSON structure:\n"
+            "{\n"
+            '  "suggestions": [\n'
+            "    {\n"
+            '      "type": "improve",\n'
+            '      "target_prompt": "Name of existing prompt to improve, or null for new",\n'
+            '      "name": "Suggestion name",\n'
+            '      "description": "What this prompt does",\n'
+            '      "rationale": "Why this improves the system",\n'
+            '      "prompt_text": "Full prompt text for Claude to analyze stocks",\n'
+            '      "output_schema": {\n'
+            '        "type": "object",\n'
+            '        "properties": {\n'
+            '          "field_name": {"type": "string", "enum": ["VAL1", "VAL2"]}\n'
+            "        },\n"
+            '        "required": ["field_name"]\n'
+            "      },\n"
+            '      "pros": ["strength 1", "strength 2", "strength 3"],\n'
+            '      "cons": ["limitation 1", "limitation 2"]\n'
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "For 'type': use 'improve' when refining an existing prompt, 'new' for a brand new analysis angle.\n"
+            "Ensure output_schema has both 'properties' and 'required' keys.\n"
+            "Use enum arrays for categorical fields, 'number' for 0-100 scores, 'string' for text."
         )
 
-        response = self.client.messages.create(
-            model=model,
-            max_tokens=4000,
-            system=system,
-            messages=[{"role": "user", "content": user_msg}],
-        )
+        try:
+            response = self.client.messages.create(
+                model=model,
+                max_tokens=4000,
+                system=system,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+        except anthropic.APIConnectionError as e:
+            raise ConnectionError(f"Cannot reach Anthropic API: {e}")
+        except anthropic.AuthenticationError:
+            raise ValueError("Anthropic API key is invalid")
+        except anthropic.RateLimitError:
+            raise ValueError("Anthropic rate limit hit — wait a minute and retry")
 
         if not response.content:
             return [], {"input_tokens": 0, "output_tokens": 0, "cost": 0}
@@ -248,17 +293,70 @@ class AnthropicService:
         )
 
         raw = response.content[0].text.strip()
+        logger.info(f"Suggestions raw response (first 500): {raw[:500]}")
+
+        # Strip markdown fences if present
         clean = raw
         if "```" in clean:
-            clean = clean.split("```")[1]
-            if clean.startswith("json"):
-                clean = clean[4:]
+            parts = clean.split("```")
+            for part in parts:
+                part = part.strip()
+                if part.startswith("json"):
+                    part = part[4:].strip()
+                if part.startswith("{"):
+                    clean = part
+                    break
+
         try:
-            suggestions = json.loads(clean.strip())
-            if not isinstance(suggestions, list):
-                suggestions = [suggestions]
-        except json.JSONDecodeError:
-            logger.error(f"Suggestions returned invalid JSON: {raw[:200]}")
+            parsed = json.loads(clean.strip())
+            # Handle both {"suggestions": [...]} and direct array
+            if isinstance(parsed, list):
+                suggestions = parsed
+            elif isinstance(parsed, dict):
+                suggestions = parsed.get("suggestions", [])
+                if not suggestions:
+                    # Try to find any list value
+                    for v in parsed.values():
+                        if isinstance(v, list):
+                            suggestions = v
+                            break
+            else:
+                suggestions = []
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse suggestions JSON: {e}\nRaw: {raw[:500]}")
             suggestions = []
 
-        return suggestions, usage
+        # Validate and sanitize each suggestion
+        valid_suggestions = []
+        for s in suggestions:
+            if not isinstance(s, dict):
+                continue
+            # Ensure required fields
+            if not s.get("name") or not s.get("prompt_text"):
+                continue
+            # Ensure output_schema is valid
+            schema = s.get("output_schema", {})
+            if not isinstance(schema, dict) or "properties" not in schema:
+                # Build a minimal schema
+                s["output_schema"] = {
+                    "type": "object",
+                    "properties": {
+                        "signal": {"type": "string", "enum": ["BUY", "HOLD", "SELL", "WATCH"]},
+                        "score": {"type": "number", "description": "Score 0-100"},
+                        "summary": {"type": "string", "description": "Analysis summary"},
+                    },
+                    "required": ["signal", "score", "summary"],
+                }
+            if "required" not in s.get("output_schema", {}):
+                s["output_schema"]["required"] = list(s["output_schema"].get("properties", {}).keys())
+            # Ensure pros/cons are lists
+            if not isinstance(s.get("pros"), list):
+                s["pros"] = []
+            if not isinstance(s.get("cons"), list):
+                s["cons"] = []
+            # Ensure type field
+            if s.get("type") not in ("improve", "new"):
+                s["type"] = "new"
+            valid_suggestions.append(s)
+
+        return valid_suggestions, usage
